@@ -119,12 +119,60 @@ else
     printf "(3/6) Installing WasmEdge ...(ignored)\n\n"
 fi
 
-########### Step 4: Downloading the model ###########
+wasmedge_dir="$HOME/.wasmedge"
+if [ ! -d "$wasmedge_dir" ]; then
+    printf "      Please install WasmEdge Runtime using the command 'bash llama-api-server.sh --all true'\n"
+    exit 1
+fi
+
+########### Step 4: Downloading the wasm file ###########
+
+# Define the wasm directory
+server_dir="$wasmedge_dir/server"
+
+# Check if the wasm directory exists
+if [ ! -d "$server_dir" ]; then
+    # If the wasm directory does not exist, create it
+    mkdir -p "$server_dir"
+fi
+
+# Define the wasm URL
+url_server_app="https://github.com/second-state/llama-utils/raw/main/api-server/llama-api-server.wasm"
+# Define the wasm file
+server_app="$server_dir/$(basename $url_server_app)"
+
+# If --update-server-app is true or --all is true, perform some action
+if [ "$all" = true ] || [ "$update_server_app" = true ]; then
+
+    printf "(4/6) Downloading 'llama-api-server' wasm app ...\n\n"
+
+    # Check if the wasm file exists
+    if [ -f "$server_app" ]; then
+        # If the file exists, remove it
+        rm "$server_app"
+    fi
+
+    # Download the wasm file to the wasm directory
+    curl -o "$server_app" -L "$url_server_app" -#
+
+    # Check if the curl command was successful
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to download wasm file from $url_server_app"
+        exit 1
+    fi
+
+    printf "\n"
+
+else
+    printf "(4/6) Downloading 'llama-api-server' wasm app ...(ignored)\n\n"
+fi
+
+########### Step 5: Downloading the model ###########
 
 # If --update-model is true or --all is true, run the selected code
-if [ "$all" = true ] || [ "$update_model" = true ]; then
+if [ "$all" = true ] || [ "$update_server_app" = true ] || [ "$update_model" = true ]; then
 
-    printf "(4/6) Downloading the gguf model ...\n\n"
+    printf "(5/6) Downloading the gguf model ...\n\n"
 
     models="llama-2-7b-chat https://huggingface.co/second-state/Llama-2-7B-Chat-GGUF/resolve/main/llama-2-7b-chat.Q5_K_M.gguf llama-2-chat \
     llama-2-13b-chat https://huggingface.co/second-state/Llama-2-13B-Chat-GGUF/resolve/main/llama-2-13b-chat.Q5_K_M.gguf llama-2-chat \
@@ -156,18 +204,26 @@ if [ "$all" = true ] || [ "$update_model" = true ]; then
     IFS=$'\n'
 
     # Check if the provided model name exists in the models string
-    url=$(printf "%s\n" $models | awk -v model=$model '{for(i=1;i<=NF;i++)if($i==model)print $(i+1)}')
+    url_gguf_model=$(printf "%s\n" $models | awk -v model=$model '{for(i=1;i<=NF;i++)if($i==model)print $(i+1)}')
 
-    if [ -z "$url" ]; then
+    if [ -z "$url_gguf_model" ]; then
         printf "\n      The URL for downloading the target gguf model does not exist.\n"
         exit 1
     fi
 
-    printf "\n      You picked %s, downloading from %s\n" "$model" "$url"
-    curl -LO $url -#
+    gguf_model_filename=$(basename $url_gguf_model)
+    gguf_model_file="$server_dir/$gguf_model_filename"
 
-    # get the model name from the url
-    model_file=$(basename $url)
+    if [ "$update_model" = true ] && [ -f "$gguf_model_file" ]; then
+        # If the file exists, remove it
+        rm "$gguf_model_file"
+    fi
+
+    if [ "$all" = true ] || ([ "$update_server_app" = true ] && [ ! -f "$gguf_model_file" ]) || [ "$update_model" = true ]; then
+        printf "\n      You picked %s, downloading from %s\n" "$model" "$url_gguf_model"
+        # download the model file to the wasm directory
+        curl -o "$gguf_model_file" -L "$url_gguf_model" -#
+    fi
 
     # Check if the provided model name exists in the models string
     prompt_template=$(printf "%s\n" $models | awk -v model=$model '{for(i=1;i<=NF;i++)if($i==model)print $(i+2)}')
@@ -180,49 +236,52 @@ if [ "$all" = true ] || [ "$update_model" = true ]; then
     printf "\n"
 
 else
-    printf "(4/6) Downloading the gguf model ...(ignored)\n\n"
-fi
-
-########### Step 5: Downloading the wasm file ###########
-
-# If --update-server is true or --all is true, perform some action
-if [ "$all" = true ] || [ "$update_server_app" = true ]; then
-
-    printf "(5/6) Downloading 'llama-api-server' wasm app ...\n\n"
-
-    wasm_url="https://github.com/second-state/llama-utils/raw/main/api-server/llama-api-server.wasm"
-    curl -LO $wasm_url -#
-
-    printf "\n"
-
-else
-    printf "(5/6) Downloading 'llama-api-server' wasm app ...(ignored)\n\n"
+    printf "(5/6) Downloading the gguf model ...(ignored)\n\n"
 fi
 
 ########### Step 6: Start llama-api-server ###########
 
-if [ "$all" = true ]; then
+printf "server_dir: $server_dir\n"
 
-    printf "(6/6) Starting llama-api-server ...\n\n"
+if pgrep -x "wasmedge" > /dev/null
+then
+    printf "(6/6) Restarting llama-api-server ...\n"
+
+    # If the process is running, kill it
+    pkill -x "wasmedge"
+
+    # todo: Check if `server_app` exists or not
+    if [ ! -f "$server_app" ]; then
+        printf "\n      Not found: $server_app\n"
+        exit 1
+    fi
+
+    # todo: Check if `gguf_model_file` exists or not
+    if [ ! -f "$gguf_model_file" ]; then
+        printf "\n      Not found: $gguf_model_file\n"
+        exit 1
+    fi
+
+    echo $gguf_model_file
+
+    # Restart the server and save the PID
+    wasmedge --dir $server_dir:. --nn-preload default:GGML:AUTO:$gguf_model_filename llama-api-server.wasm -p $prompt_template
+
+else
+    printf "(6/6) Starting llama-api-server ...\n"
+
+    # todo: Check if `server_app` exists or not
+    if [ ! -f "$server_app" ]; then
+        printf "\n      Not found: $server_app\n"
+        exit 1
+    fi
+
+    # todo: Check if `gguf_model_file` exists or not
+    if [ ! -f "$gguf_model_file" ]; then
+        printf "\n      Not found: $gguf_model_file\n"
+        exit 1
+    fi
 
     # Start the server and save the PID
-    wasmedge --dir .:. --nn-preload default:GGML:AUTO:$model_file llama-api-server.wasm -p $prompt_template &
-    echo $! > wasmedge_pid.txt
-
-fi
-
-if [ "$all" = false ] && ([ "$update_model" = true ] || [ "$update_server_app" = true ] || [ "$restart_server" = true ]); then
-
-    printf "(6/6) Restarting llama-api-server ...\n\n"
-
-    # Get the PID from the file
-    wasmedge_pid=$(cat wasmedge_pid.txt)
-
-    # Kill the server
-    kill $wasmedge_pid
-
-    # Start the server and save the PID
-    wasmedge --dir .:. --nn-preload default:GGML:AUTO:$model_file llama-api-server.wasm -p $prompt_template &
-    echo $! > wasmedge_pid.txt
-
+    wasmedge --dir $server_dir:. --nn-preload default:GGML:AUTO:$gguf_model_filename llama-api-server.wasm -p $prompt_template
 fi
