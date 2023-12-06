@@ -21,6 +21,8 @@ use endpoints::{
 use hyper::{body::to_bytes, Body, Request, Response};
 use std::time::SystemTime;
 
+use std::time::Instant;
+
 /// Lists models available
 pub(crate) async fn models_handler(
     model_info: ModelInfo,
@@ -64,7 +66,6 @@ pub(crate) async fn _embeddings_handler() -> Result<Response<Body>, hyper::Error
 
 pub(crate) async fn completions_handler(
     mut req: Request<Body>,
-    metadata: String,
 ) -> Result<Response<Body>, hyper::Error> {
     println!("[COMPLETION] New completion begins ...");
 
@@ -77,7 +78,7 @@ pub(crate) async fn completions_handler(
     // ! todo: a temp solution of computing the number of tokens in prompt
     let prompt_tokens = prompt.split_whitespace().count() as u32;
 
-    let buffer = match infer(prompt.trim(), metadata).await {
+    let buffer = match infer(prompt.trim()).await {
         Ok(buffer) => buffer,
         Err(e) => {
             return error::internal_server_error(e.to_string());
@@ -134,7 +135,6 @@ pub(crate) async fn completions_handler(
 pub(crate) async fn chat_completions_handler(
     mut req: Request<Body>,
     template_ty: PromptTemplateType,
-    metadata: String,
     log_prompts: bool,
 ) -> Result<Response<Body>, hyper::Error> {
     if req.method().eq(&hyper::http::Method::OPTIONS) {
@@ -198,9 +198,24 @@ pub(crate) async fn chat_completions_handler(
     }
     let template = create_prompt_template(template_ty);
 
+    println!("\n---------------- [LOG: Perf] ---------------------\n");
+
+    // ! perf test: de-serialize request
+    let start = Instant::now();
+
     // parse request
     let body_bytes = to_bytes(req.body_mut()).await?;
     let mut chat_request: ChatCompletionRequest = serde_json::from_slice(&body_bytes).unwrap();
+
+    let duration = start.elapsed();
+    println!(
+        "[PERF] de-serialize request: {elapsed_in_ms} ms (or {elapsed_in_micros} micros)\n",
+        elapsed_in_ms = duration.as_millis(),
+        elapsed_in_micros = duration.as_micros()
+    );
+
+    // ! perf test: build prompt
+    let start = Instant::now();
 
     // build prompt
     let prompt = match template.build(chat_request.messages.as_mut()) {
@@ -209,6 +224,13 @@ pub(crate) async fn chat_completions_handler(
             return error::internal_server_error(e.to_string());
         }
     };
+
+    let duration = start.elapsed();
+    println!(
+        "[PERF] build prompt: {elapsed_in_ms} ms (or {elapsed_in_micros} micros)\n",
+        elapsed_in_ms = duration.as_millis(),
+        elapsed_in_micros = duration.as_micros()
+    );
 
     if log_prompts {
         println!("\n---------------- [LOG: PROMPT] ---------------------\n");
@@ -219,23 +241,47 @@ pub(crate) async fn chat_completions_handler(
     // ! todo: a temp solution of computing the number of tokens in prompt
     let prompt_tokens = prompt.split_whitespace().count() as u32;
 
+    // ! perf test: inference
+    let start = Instant::now();
+
     // run inference
-    let buffer = match infer(prompt, metadata).await {
+    let buffer = match infer(prompt).await {
         Ok(buffer) => buffer,
         Err(e) => {
             return error::internal_server_error(e.to_string());
         }
     };
 
-    // convert inference result to string
-    let output = String::from_utf8(buffer.clone()).unwrap();
+    let duration = start.elapsed();
+    println!(
+        "[PERF] the entire inference: {elapsed_in_ms} ms (or {elapsed_in_micros} micros)\n",
+        elapsed_in_ms = duration.as_millis(),
+        elapsed_in_micros = duration.as_micros()
+    );
 
-    let message = post_process(&output, template_ty);
+    // // ! perf test: post-process
+    // let start = Instant::now();
+
+    // // convert inference result to string
+    // let output = String::from_utf8(buffer.clone()).unwrap();
+
+    // let message = post_process(&output, template_ty);
+
+    // let duration = start.elapsed();
+    // println!(
+    //     "[PERF] post-process inference result: {elapsed_in_ms} ms (or {elapsed_in_micros} micros)\n",
+    //     elapsed_in_ms = duration.as_millis(),
+    //     elapsed_in_micros = duration.as_micros()
+    // );
+
+    // ! perf test
+    let message = String::from("This is a fake message for perf test.");
 
     // ! todo: a temp solution of computing the number of tokens in assistant_message
     let completion_tokens = message.split_whitespace().count() as u32;
 
-    print(&message);
+    // ! perf test: build response
+    let start = Instant::now();
 
     // create ChatCompletionResponse
     let chat_completion_obejct = ChatCompletionResponse {
@@ -270,6 +316,16 @@ pub(crate) async fn chat_completions_handler(
         .body(Body::from(
             serde_json::to_string(&chat_completion_obejct).unwrap(),
         ));
+
+    let duration = start.elapsed();
+    println!(
+        "[PERF] build response: {elapsed_in_ms} ms (or {elapsed_in_micros} micros)\n",
+        elapsed_in_ms = duration.as_millis(),
+        elapsed_in_micros = duration.as_micros()
+    );
+
+    println!("\n----------------------------------------------------\n");
+
     match result {
         Ok(response) => Ok(response),
         Err(e) => error::internal_server_error(e.to_string()),
@@ -277,44 +333,52 @@ pub(crate) async fn chat_completions_handler(
 }
 
 /// Runs inference on the model with the given name and returns the output.
-pub(crate) async fn infer(
-    prompt: impl AsRef<str>,
-    metadata: String,
-) -> std::result::Result<Vec<u8>, String> {
-    let graph = crate::GRAPH.get().unwrap().lock().unwrap();
+pub(crate) async fn infer(prompt: impl AsRef<str>) -> std::result::Result<Vec<u8>, String> {
+    let mut graph = crate::GRAPH.get().unwrap().lock().unwrap();
 
-    let mut context = graph.init_execution_context().unwrap();
-
-    // set metadata
-    if context
-        .set_input(
-            1,
-            wasi_nn::TensorType::U8,
-            &[1],
-            metadata.as_bytes().to_owned(),
-        )
-        .is_err()
-    {
-        return Err(String::from("Fail to set metadata"));
-    };
+    // ! perf test: set input
+    let start = Instant::now();
 
     let tensor_data = prompt.as_ref().as_bytes().to_vec();
     // println!("Read input tensor, size in bytes: {}", tensor_data.len());
-    if context
+    if graph
         .set_input(0, wasi_nn::TensorType::U8, &[1], &tensor_data)
         .is_err()
     {
         return Err(String::from("Fail to set input tensor"));
     };
 
+    // // ! debug
+    // drop(tensor_data);
+
+    let duration = start.elapsed();
+    println!(
+        "[PERF] `set_input(tensor)` of inference: {elapsed_in_ms} ms (or {elapsed_in_micros} micros)",
+        elapsed_in_ms = duration.as_millis(),
+        elapsed_in_micros = duration.as_micros()
+    );
+
+    // ! perf test: compute
+    let start = Instant::now();
+
     // execute the inference
-    if context.compute().is_err() {
+    if graph.compute().is_err() {
         return Err(String::from("Fail to execute model inference"));
     }
 
+    let duration = start.elapsed();
+    println!(
+        "[PERF] `compute` of inference: {elapsed_in_ms} ms (or {elapsed_in_micros} micros)",
+        elapsed_in_ms = duration.as_millis(),
+        elapsed_in_micros = duration.as_micros()
+    );
+
+    // ! perf test: get output
+    let start = Instant::now();
+
     // Retrieve the output.
     let mut output_buffer = vec![0u8; *CTX_SIZE.get().unwrap()];
-    let mut output_size = match context.get_output(0, &mut output_buffer) {
+    let mut output_size = match graph.get_output(0, &mut output_buffer) {
         Ok(size) => size,
         Err(e) => {
             return Err(format!(
@@ -324,7 +388,18 @@ pub(crate) async fn infer(
         }
     };
     output_size = std::cmp::min(*CTX_SIZE.get().unwrap(), output_size);
+
+    let duration = start.elapsed();
+    println!(
+        "[PERF] `get_output` of inference: {elapsed_in_ms} ms (or {elapsed_in_micros} micros)",
+        elapsed_in_ms = duration.as_millis(),
+        elapsed_in_micros = duration.as_micros()
+    );
+
     Ok(output_buffer[..output_size].to_vec())
+
+    // // ! perf test
+    // Ok(vec![])
 }
 
 fn post_process(output: impl AsRef<str>, template_ty: PromptTemplateType) -> String {
