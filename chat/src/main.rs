@@ -111,6 +111,8 @@ fn main() -> Result<(), String> {
                     "intel-neural",
                     "deepseek-chat",
                     "deepseek-coder",
+                    "phi-2-chat",
+                    "phi-2-instruct",
                 ])
                 .value_name("TEMPLATE")
                 .help("Prompt template.")
@@ -430,6 +432,12 @@ fn create_prompt_template(template_ty: PromptTemplateType) -> ChatPrompt {
         PromptTemplateType::DeepseekCoder => ChatPrompt::DeepseekCoderPrompt(
             chat_prompts::chat::deepseek::DeepseekCoderPrompt::default(),
         ),
+        PromptTemplateType::Phi2Chat => {
+            ChatPrompt::Phi2ChatPrompt(chat_prompts::chat::phi::Phi2ChatPrompt::default())
+        }
+        PromptTemplateType::Phi2Instruct => {
+            ChatPrompt::Phi2InstructPrompt(chat_prompts::chat::phi::Phi2InstructPrompt::default())
+        }
     }
 }
 
