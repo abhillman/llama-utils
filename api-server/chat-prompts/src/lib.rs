@@ -20,6 +20,8 @@ pub enum PromptTemplateType {
     IntelNeural,
     DeepseekChat,
     DeepseekCoder,
+    Phi2Chat,
+    Phi2Instruct,
 }
 impl FromStr for PromptTemplateType {
     type Err = error::PromptError;
@@ -42,6 +44,8 @@ impl FromStr for PromptTemplateType {
             "intel-neural" => Ok(PromptTemplateType::IntelNeural),
             "deepseek-chat" => Ok(PromptTemplateType::DeepseekChat),
             "deepseek-coder" => Ok(PromptTemplateType::DeepseekCoder),
+            "phi-2-chat" => Ok(PromptTemplateType::Phi2Chat),
+            "phi-2-instruct" => Ok(PromptTemplateType::Phi2Instruct),
             _ => Err(error::PromptError::UnknownPromptTemplateType(
                 template.to_string(),
             )),
@@ -66,6 +70,8 @@ impl std::fmt::Display for PromptTemplateType {
             PromptTemplateType::IntelNeural => write!(f, "intel-neural"),
             PromptTemplateType::DeepseekChat => write!(f, "deepseek-chat"),
             PromptTemplateType::DeepseekCoder => write!(f, "deepseek-coder"),
+            PromptTemplateType::Phi2Chat => write!(f, "phi-2-chat"),
+            PromptTemplateType::Phi2Instruct => write!(f, "phi-2-instruct"),
         }
     }
 }
